@@ -1,0 +1,350 @@
+-------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  C:\Users\ASUS\Desktop\PSMDID案例\PSMDID案例.log
+  log type:  text
+ opened on:  15 Aug 2026, 17:40:20
+
+. 
+. *---------------------------------------------------------------
+. * 自动检查并安装所需命令（首次联网安装一次即可）
+. *---------------------------------------------------------------
+. capture which psmatch2
+
+. if _rc ssc install psmatch2, replace
+
+. capture which reghdfe
+
+. if _rc ssc install reghdfe, replace
+
+. capture which coefplot
+
+. if _rc ssc install coefplot, replace
+
+. 
+. *---------------------------------------------------------------
+. * 1. 模拟面板数据：2000家企业 × 8年（2013-2020），政策年2016
+. *    【换用真实数据时，替换这一段即可，后面代码不用动】
+. *---------------------------------------------------------------
+. set seed 20260818
+
+. set obs 2000
+Number of observations (_N) was 0, now 2,000.
+
+. gen id      = _n
+
+. gen size    = rnormal(8, 1)            // 资产规模（对数）
+
+. gen firmage = rnormal(12, 4)           // 成立年限
+
+. gen lev     = runiform()*0.8           // 杠杆率
+
+. 
+. * 选择方程：规模大、成立久、杠杆高的企业更可能获补贴（自选择）
+. gen z       = -3.5 + 0.35*size + 0.06*firmage + 1.5*lev
+
+. gen treated = runiform() < invlogit(z)
+
+. 
+. gen alpha   = rnormal(0, 0.3)          // 企业固定效应
+
+. expand 8
+(14,000 observations created)
+
+. bysort id: gen year = 2012 + _n
+
+. gen post = (year >= 2016)
+
+. 
+. * 结果方程：产出对数；规模带来更快的趋势（0.03*size*t），
+. * 真实补贴效应 = 0.30
+. gen y = 5 + alpha + 0.02*(year-2012) + 0.03*size*(year-2012) ///
+>       + 0.30*treated*post + rnormal(0, 0.25)
+
+. *         ↑真实效应
+. 
+. xtset id year
+
+Panel variable: id (strongly balanced)
+ Time variable: year, 2013 to 2020
+         Delta: 1 unit
+
+. save "PSMDID案例数据.dta", replace
+(file PSMDID案例数据.dta not found)
+file PSMDID案例数据.dta saved
+
+. 
+. *===============================================================
+. * 2. 朴素DID（全样本、未匹配）：有偏的对照
+. *===============================================================
+. gen did = treated * post
+
+. reghdfe y did, absorb(id year) vce(cluster id)
+(MWFE estimator converged in 2 iterations)
+
+HDFE Linear regression                            Number of obs   =     16,000
+Absorbing 2 HDFE groups                           F(   1,   1999) =    1054.61
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.9110
+                                                  Adj R-squared   =     0.8983
+                                                  Within R-sq.    =     0.0905
+Number of clusters (id)      =      2,000         Root MSE        =     0.2611
+
+                                 (Std. err. adjusted for 2,000 clusters in id)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+         did |    .334162   .0102899    32.47   0.000      .313982     .354342
+       _cons |   6.161205   .0041996  1467.11   0.000     6.152969    6.169441
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |      2000        2000           0    *|
+        year |         8           1           7     |
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. estimates store naive
+
+. display as result ">>> 朴素DID估计（应明显偏离真实值0.30）"
+>>> 朴素DID估计（应明显偏离真实值0.30）
+
+. 
+. *===============================================================
+. * 3. 第一步：用政策前（2015年）协变量做倾向得分匹配
+. *===============================================================
+. preserve
+
+. keep if year == 2015                  // 政策前一期截面
+(14,000 observations deleted)
+
+. logit treated size firmage lev
+
+Iteration 0:  Log likelihood = -1291.1394  
+Iteration 1:  Log likelihood = -1226.7591  
+Iteration 2:  Log likelihood =  -1226.187  
+Iteration 3:  Log likelihood = -1226.1868  
+Iteration 4:  Log likelihood = -1226.1868  
+
+Logistic regression                                     Number of obs =  2,000
+                                                        LR chi2(3)    = 129.91
+                                                        Prob > chi2   = 0.0000
+Log likelihood = -1226.1868                             Pseudo R2     = 0.0503
+
+------------------------------------------------------------------------------
+     treated | Coefficient  Std. err.      z    P>|z|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+        size |   .3854667   .0495951     7.77   0.000     .2882621    .4826713
+     firmage |   .0557263   .0126155     4.42   0.000     .0310004    .0804522
+         lev |   1.462586   .2136234     6.85   0.000     1.043891     1.88128
+       _cons |  -3.659767   .4365955    -8.38   0.000    -4.515479   -2.804056
+------------------------------------------------------------------------------
+
+. predict pscore, pr
+
+. psmatch2 treated, pscore(pscore) neighbor(1) caliper(0.05) common
+
+. pstest size firmage lev, both graph   // 平衡性检验：匹配后偏差应<10%
+
+-------------------------------------------------------------------------------
+> ---------
+                Unmatched |       Mean               %reduct |     t-test    | 
+>  V(T)/
+Variable          Matched | Treated Control    %bias  |bias| |    t    p>|t| | 
+>  V(C)
+--------------------------+----------------------------------+---------------+-
+> ---------
+size                   U  | 8.1283   7.7551     37.9         |   8.04  0.000 | 
+>  1.04
+                       M  | 8.1271   8.1079      2.0    94.8 |   0.51  0.610 | 
+>  1.14*
+                          |                                  |               |
+firmage                U  | 12.427   11.628     20.4         |   4.36  0.000 | 
+>  0.93
+                       M  | 12.415     12.5     -2.2    89.3 |  -0.53  0.595 | 
+>  0.78*
+                          |                                  |               |
+lev                    U  | .42022   .34671     32.3         |   6.85  0.000 | 
+>  1.05
+                       M  | .42005   .42183     -0.8    97.6 |  -0.20  0.842 | 
+>  1.03
+                          |                                  |               |
+-------------------------------------------------------------------------------
+> ---------
+* if variance ratio outside [0.90; 1.11] for U and [0.90; 1.11] for M
+
+-------------------------------------------------------------------------------
+> ----
+ Sample    | Ps R2   LR chi2   p>chi2   MeanBias   MedBias      B      R     %V
+> ar
+-----------+-------------------------------------------------------------------
+> ----
+ Unmatched | 0.050    129.64    0.000     30.2      32.3      54.5*   1.02     
+>  0
+ Matched   | 0.000      0.59    0.898      1.6       2.0       3.0    0.94     
+> 67
+-------------------------------------------------------------------------------
+> ----
+* if B>25%, R outside [0.5; 2]
+
+. graph export "PSMDID_平衡性检验图.png", replace width(2000)
+(file PSMDID_平衡性检验图.png not found)
+file PSMDID_平衡性检验图.png saved as PNG format
+
+. 
+. * 共同支撑图
+. twoway (histogram pscore if treated==1, width(0.02) color(red%55)) ///
+>        (histogram pscore if treated==0, width(0.02) color(navy%55)), ///
+>     legend(label(1 "处理组") label(2 "对照组")) ///
+>     xtitle("倾向得分") ytitle("频数") title("共同支撑检验")
+
+. graph export "PSMDID_共同支撑图.png", replace width(2000)
+(file PSMDID_共同支撑图.png not found)
+file PSMDID_共同支撑图.png saved as PNG format
+
+. 
+. * 保存匹配成功个体的编号与权重
+. keep id _weight
+
+. keep if !missing(_weight) & _weight > 0
+(208 observations deleted)
+
+. save "matched_id.dta", replace
+(file matched_id.dta not found)
+file matched_id.dta saved
+
+. restore
+
+. 
+. *===============================================================
+. * 4. 第二步：匹配样本上的DID
+. *===============================================================
+. preserve
+
+. merge m:1 id using "matched_id.dta", keep(match) nogen
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                             0
+    Matched                            14,336  
+    -----------------------------------------
+
+. reghdfe y did, absorb(id year) vce(cluster id)
+(MWFE estimator converged in 2 iterations)
+
+HDFE Linear regression                            Number of obs   =     14,336
+Absorbing 2 HDFE groups                           F(   1,   1791) =     747.79
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.9126
+                                                  Adj R-squared   =     0.9001
+                                                  Within R-sq.    =     0.0718
+Number of clusters (id)      =      1,792         Root MSE        =     0.2609
+
+                                 (Std. err. adjusted for 1,792 clusters in id)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+         did |   .3151147   .0115234    27.35   0.000      .292514    .3377154
+       _cons |   6.180993   .0052448  1178.49   0.000     6.170706    6.191279
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |      1792        1792           0    *|
+        year |         8           1           7     |
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. estimates store matched
+
+. display as result ">>> PSM-DID估计（应回到真实值0.30附近）"
+>>> PSM-DID估计（应回到真实值0.30附近）
+
+. 
+. * 事件研究（匹配样本）：政策前系数应含0
+. gen rel = year - 2016
+
+. forvalues s = -3/4 {
+  2.     local name = cond(`s' < 0, "m" + string(-`s'), "p" + string(`s'))
+  3.     gen D_`name' = (rel == `s' & treated == 1)
+  4. }
+
+. drop D_m1                                // 以政策前一期为基准
+
+. reghdfe y D_*, absorb(id year) vce(cluster id)
+(MWFE estimator converged in 2 iterations)
+
+HDFE Linear regression                            Number of obs   =     14,336
+Absorbing 2 HDFE groups                           F(   7,   1791) =     107.62
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.9127
+                                                  Adj R-squared   =     0.9001
+                                                  Within R-sq.    =     0.0725
+Number of clusters (id)      =      1,792         Root MSE        =     0.2609
+
+                                 (Std. err. adjusted for 1,792 clusters in id)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+        D_m3 |  -.0306084   .0187284    -1.63   0.102    -.0673402    .0061233
+        D_m2 |  -.0075938   .0186741    -0.41   0.684    -.0442191    .0290315
+        D_p0 |   .2960219   .0189483    15.62   0.000     .2588587     .333185
+        D_p1 |   .2769235   .0186797    14.82   0.000     .2402871    .3135598
+        D_p2 |   .3038482   .0194736    15.60   0.000     .2656549    .3420415
+        D_p3 |   .3124253   .0198163    15.77   0.000     .2735598    .3512908
+        D_p4 |   .3226842   .0195954    16.47   0.000      .284252    .3611164
+       _cons |   6.190266   .0091226   678.57   0.000     6.172374    6.208158
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |      1792        1792           0    *|
+        year |         8           1           7     |
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. coefplot, keep(D_*) vertical yline(0) xline(3.5, lpattern(dash)) ///
+>     coeflabels(D_m3="-3" D_m2="-2" D_p0="0" D_p1="1" D_p2="2" D_p3="3" D_p4="
+> 4") ///
+>     xtitle("相对政策时点") ytitle("效应系数") ///
+>     title("事件研究：政策前系数含0，政策后约为0.30")
+
+. graph export "PSMDID_事件研究图.png", replace width(2000)
+(file PSMDID_事件研究图.png not found)
+file PSMDID_事件研究图.png saved as PNG format
+
+. restore
+
+. 
+. *===============================================================
+. * 5. 结果对照：朴素DID vs PSM-DID
+. *===============================================================
+. capture which esttab
+
+. if _rc ssc install estout, replace
+
+. esttab naive matched using "PSMDID回归结果.rtf", replace ///
+>     b(%9.3f) se(%9.3f) star(* 0.1 ** 0.05 *** 0.01) ///
+>     keep(did) mtitles("朴素DID（有偏）" "PSM-DID") ///
+>     title("PSM-DID估计结果（真实效应 = 0.30）") ///
+>     addnotes("括号内为企业层面聚类稳健标准误")
+(file PSMDID回归结果.rtf not found)
+(output written to PSMDID回归结果.rtf)
+
+. 
+. *===============================================================
+. log close
+      name:  <unnamed>
+       log:  C:\Users\ASUS\Desktop\PSMDID案例\PSMDID案例.log
+  log type:  text
+ closed on:  15 Aug 2026, 17:40:27
+-------------------------------------------------------------------------------

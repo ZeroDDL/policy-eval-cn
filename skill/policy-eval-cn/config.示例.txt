@@ -1,0 +1,2 @@
+stata=D:\Program Files\Stata18\StataMP-64.exe
+cases=D:\path\to\policy-eval-cn\cases

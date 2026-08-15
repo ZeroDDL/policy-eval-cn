@@ -1,0 +1,251 @@
+-------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  C:\Users\ASUS\Desktop\多期DID案例\多期DID案例.log
+  log type:  text
+ opened on:  15 Aug 2026, 17:47:40
+
+. 
+. *---------------------------------------------------------------
+. * 自动检查并安装所需命令（首次联网安装一次即可）
+. *---------------------------------------------------------------
+. capture which bacondecomp
+
+. if _rc ssc install bacondecomp, replace
+
+. capture which reghdfe
+
+. if _rc ssc install reghdfe, replace
+
+. capture which coefplot
+
+. if _rc ssc install coefplot, replace
+
+. 
+. *---------------------------------------------------------------
+. * 1. 模拟面板数据：1500家企业 × 11年（2010-2020）
+. *    组群：2015年首批试点（400家）、2018年二批（400家）、从未试点（700家）
+. *    真实效应：试点后第k年效应 = 0.10 × k（动态累积）
+. *    【换用真实数据时，替换这一段即可，后面代码不用动】
+. *---------------------------------------------------------------
+. set seed 20260819
+
+. set obs 1500
+Number of observations (_N) was 0, now 1,500.
+
+. gen id = _n
+
+. gen E = 0                               // 首次处理年份
+
+. replace E = 2015 if id <= 400           // 首批试点
+(400 real changes made)
+
+. replace E = 2018 if id > 400 & id <= 800 // 二批试点
+(400 real changes made)
+
+. gen alpha = rnormal(0, 0.3)             // 企业固定效应
+
+. 
+. expand 11
+(15,000 observations created)
+
+. bysort id: gen year = 2009 + _n
+
+. gen did  = (E > 0) & (year >= E)        // 处理状态
+
+. gen exp  = (year - E + 1) * did         // 试点年限（0表示未试点）
+
+. 
+. * 结果方程：真实效应 = 0.10 × 试点年限（动态效应）
+. gen y = 3 + alpha + 0.05*(year-2010) + 0.10*exp + rnormal(0, 0.25)
+
+. *                                        ↑真实效应（逐年累积）
+. 
+. xtset id year
+
+Panel variable: id (strongly balanced)
+ Time variable: year, 2010 to 2020
+         Delta: 1 unit
+
+. save "多期DID案例数据.dta", replace
+(file 多期DID案例数据.dta not found)
+file 多期DID案例数据.dta saved
+
+. 
+. * 真实平均ATT（备查）：处理单元×处理期的平均效应
+. quietly sum exp if did == 1, meanonly
+
+. display as result ">>> 真实平均ATT = 0.10 × 平均试点年限 = " %5.3f 0.10*r(mea
+> n)
+>>> 真实平均ATT = 0.10 × 平均试点年限 = 0.300
+
+. 
+. *===============================================================
+. * 2. 基准TWFE回归：在动态效应下会明显偏误
+. *===============================================================
+. reghdfe y did, absorb(id year) vce(cluster id)
+(MWFE estimator converged in 2 iterations)
+
+HDFE Linear regression                            Number of obs   =     16,500
+Absorbing 2 HDFE groups                           F(   1,   1499) =     968.69
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.7180
+                                                  Adj R-squared   =     0.6896
+                                                  Within R-sq.    =     0.0671
+Number of clusters (id)      =      1,500         Root MSE        =     0.2610
+
+                                 (Std. err. adjusted for 1,500 clusters in id)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+         did |    .252935   .0081267    31.12   0.000      .236994    .2688759
+       _cons |   3.256047   .0017731  1836.36   0.000     3.252569    3.259526
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |      1500        1500           0    *|
+        year |        11           1          10     |
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. estimates store twfe
+
+. display as result ">>> TWFE估计（与真实平均ATT对比，观察偏误方向与幅度）"
+>>> TWFE估计（与真实平均ATT对比，观察偏误方向与幅度）
+
+. 
+. *===============================================================
+. * 3. Goodman-Bacon分解：TWFE是哪些2×2比较的加权平均？
+. *===============================================================
+. bacondecomp y did, ddetail
+Computing decomposition across 3 timing groups
+including a never-treated group
+------------------------------------------------------------------------------
+           y | Coefficient  Std. err.      z    P>|z|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+         did |    .252935   .0077008    32.85   0.000     .2378416    .2680283
+------------------------------------------------------------------------------
+
+Bacon Decomposition
+
++---------------------------------------------------+
+|                      |         Beta   TotalWeight |
+|----------------------+----------------------------|
+|         Early_v_Late |  .2048797756   .1265822822 |
+|         Late_v_Early | -.1245941445   .0759493653 |
+|       Never_v_timing |  .2965179273   .7974683525 |
++---------------------------------------------------+
+
+. * 重点看三行的权重（weight）：
+. *   Treated vs Never treated（干净比较）
+. *   Earlier vs Later treated（干净比较）
+. *   Later vs Earlier treated（坏比较：早处理组充当对照）
+. * 坏比较权重越大，TWFE越不可信
+. 
+. *===============================================================
+. * 4. 事件研究（TWFE版）：展示动态效应与预趋势
+. *===============================================================
+. gen rel = year - E if E > 0             // 相对政策时点
+(7,700 missing values generated)
+
+. replace rel = -5 if rel < -5 & E > 0    // 端点归并
+(1,200 real changes made)
+
+. replace rel = 4  if rel > 4  & E > 0
+(400 real changes made)
+
+. forvalues s = -5/4 {
+  2.     local name = cond(`s' < 0, "m" + string(-`s'), "p" + string(`s'))
+  3.     gen D_`name' = (rel == `s')
+  4. }
+
+. replace D_m5 = 0 if E == 0              // 从未处理企业所有哑变量取0
+(0 real changes made)
+
+. forvalues s = -4/4 {
+  2.     local name = cond(`s' < 0, "m" + string(-`s'), "p" + string(`s'))
+  3.     replace D_`name' = 0 if E == 0
+  4. }
+(0 real changes made)
+(0 real changes made)
+(0 real changes made)
+(0 real changes made)
+(0 real changes made)
+(0 real changes made)
+(0 real changes made)
+(0 real changes made)
+(0 real changes made)
+
+. drop D_m1                               // 以政策前一期为基准
+
+. 
+. reghdfe y D_*, absorb(id year) vce(cluster id)
+(MWFE estimator converged in 2 iterations)
+
+HDFE Linear regression                            Number of obs   =     16,500
+Absorbing 2 HDFE groups                           F(   9,   1499) =     276.29
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.7407
+                                                  Adj R-squared   =     0.7145
+                                                  Within R-sq.    =     0.1423
+Number of clusters (id)      =      1,500         Root MSE        =     0.2504
+
+                                 (Std. err. adjusted for 1,500 clusters in id)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+        D_m5 |   .0056885   .0134308     0.42   0.672    -.0206567    .0320337
+        D_m4 |   .0096897   .0139351     0.70   0.487    -.0176447    .0370242
+        D_m3 |   .0020393   .0153013     0.13   0.894     -.027975    .0320537
+        D_m2 |   8.46e-06   .0150537     0.00   1.000    -.0295201     .029537
+        D_p0 |   .1089134   .0158996     6.85   0.000     .0777256    .1401012
+        D_p1 |   .2070973   .0157294    13.17   0.000     .1762433    .2379512
+        D_p2 |   .3048085   .0138186    22.06   0.000     .2777027    .3319144
+        D_p3 |   .4364859   .0193765    22.53   0.000     .3984779    .4744938
+        D_p4 |   .5952814   .0159637    37.29   0.000     .5639678    .6265949
+       _cons |   3.240431   .0055059   588.53   0.000     3.229631    3.251231
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |      1500        1500           0    *|
+        year |        11           1          10     |
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. coefplot, keep(D_*) vertical yline(0) xline(5.5, lpattern(dash)) ///
+>     coeflabels(D_m5="-5-" D_m4="-4" D_m3="-3" D_m2="-2" D_p0="0" ///
+>                D_p1="1" D_p2="2" D_p3="3" D_p4="4+") ///
+>     xtitle("相对政策时点") ytitle("效应系数") ///
+>     title("TWFE事件研究（真实效应：第k期=0.10×(k+1)）")
+
+. graph export "多期DID_事件研究图.png", replace width(2000)
+(file 多期DID_事件研究图.png not found)
+file 多期DID_事件研究图.png saved as PNG format
+
+. 
+. *===============================================================
+. * 5. 解读要点（对照日志输出）
+. *===============================================================
+. display as result ">>> 解读：TWFE系数偏离真实ATT，bacondecomp显示坏比较权重，
+> "
+>>> 解读：TWFE系数偏离真实ATT，bacondecomp显示坏比较权重，
+
+. display as result ">>> 事件研究政策前系数若偏离0，说明传统设定失真——转Day 8稳
+> 健估计量"
+>>> 事件研究政策前系数若偏离0，说明传统设定失真——转Day 8稳健估计量
+
+. 
+. *===============================================================
+. log close
+      name:  <unnamed>
+       log:  C:\Users\ASUS\Desktop\多期DID案例\多期DID案例.log
+  log type:  text
+ closed on:  15 Aug 2026, 17:47:44
+-------------------------------------------------------------------------------

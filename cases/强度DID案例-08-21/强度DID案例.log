@@ -1,0 +1,229 @@
+-------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  C:\Users\ASUS\Desktop\强度DID案例\强度DID案例.log
+  log type:  text
+ opened on:  15 Aug 2026, 18:05:55
+
+. 
+. *---------------------------------------------------------------
+. * 自动检查并安装所需命令（首次联网安装一次即可）
+. *---------------------------------------------------------------
+. capture which reghdfe
+
+. if _rc ssc install reghdfe, replace
+
+. capture which coefplot
+
+. if _rc ssc install coefplot, replace
+
+. 
+. *---------------------------------------------------------------
+. * 1. 模拟面板数据：1000家企业 × 6年（2015-2020），政策年2018
+. *    【换用真实数据时，替换这一段即可，后面代码不用动】
+. *---------------------------------------------------------------
+. set seed 20260821
+
+. set obs 1000
+Number of observations (_N) was 0, now 1,000.
+
+. gen id = _n
+
+. gen treated = (id <= 500)                    // 处理组：获得补贴
+
+. gen dose = 0
+
+. replace dose = 0.1 + 0.8*runiform() if treated   // 补贴强度 U(0.1, 0.9)
+(500 real changes made)
+
+. gen alpha = rnormal(0, 0.3)                  // 企业固定效应
+
+. 
+. expand 6
+(5,000 observations created)
+
+. bysort id: gen year = 2014 + _n
+
+. gen post = (year >= 2018)
+
+. 
+. * 结果方程：真实剂量效应 = 0.8 × 强度（政策后才生效）
+. gen y = 2 + alpha + 0.04*(year-2015) + 0.8*dose*post + rnormal(0, 0.25)
+
+. *                                   ↑真实剂量效应
+. 
+. xtset id year
+
+Panel variable: id (strongly balanced)
+ Time variable: year, 2015 to 2020
+         Delta: 1 unit
+
+. save "强度DID案例数据.dta", replace
+file 强度DID案例数据.dta saved
+
+. 
+. quietly sum dose if treated, meanonly
+
+. display as result ">>> 处理组平均强度 = " %5.3f r(mean) "（ATT_glob 真值 ≈ 0.
+> 8 × 均值 = " %5.3f 0.8*r(mean) "）"
+>>> 处理组平均强度 = 0.504（ATT_glob 真值 ≈ 0.8 × 均值 = 0.403）
+
+. 
+. *===============================================================
+. * 2. 传统强度DID（TWFE）：连续强度 × 政策后
+. *    注意：reghdfe 对面板中的 c.x#i.post 因子写法处理不稳定，
+. *    手动构造交互项最稳妥
+. *===============================================================
+. gen dose_post = dose * post
+
+. reghdfe y dose_post, absorb(id year) vce(cluster id)
+(MWFE estimator converged in 2 iterations)
+
+HDFE Linear regression                            Number of obs   =      6,000
+Absorbing 2 HDFE groups                           F(   1,    999) =    1237.51
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.7466
+                                                  Adj R-squared   =     0.6957
+                                                  Within R-sq.    =     0.2042
+Number of clusters (id)      =      1,000         Root MSE        =     0.2528
+
+                                 (Std. err. adjusted for 1,000 clusters in id)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+   dose_post |   .7792642   .0221519    35.18   0.000     .7357946    .8227338
+       _cons |   2.109078    .002793   755.14   0.000     2.103597    2.114558
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |      1000        1000           0    *|
+        year |         6           1           5     |
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. estimates store twfe
+
+. display as result ">>> 强度系数应≈0.8（线性剂量-反应下TWFE可解释）"
+>>> 强度系数应≈0.8（线性剂量-反应下TWFE可解释）
+
+. 
+. *===============================================================
+. * 3. ATT_glob：二值化后的总体处理效应
+. *===============================================================
+. gen treat_post = treated * post
+
+. reghdfe y treat_post, absorb(id year) vce(cluster id)
+(MWFE estimator converged in 2 iterations)
+
+HDFE Linear regression                            Number of obs   =      6,000
+Absorbing 2 HDFE groups                           F(   1,    999) =     660.46
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.7292
+                                                  Adj R-squared   =     0.6747
+                                                  Within R-sq.    =     0.1493
+Number of clusters (id)      =      1,000         Root MSE        =     0.2614
+
+                                 (Std. err. adjusted for 1,000 clusters in id)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+  treat_post |   .3995706   .0155479    25.70   0.000     .3690603    .4300809
+       _cons |   2.107436    .003887   542.18   0.000     2.099809    2.115064
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |      1000        1000           0    *|
+        year |         6           1           5     |
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. estimates store att
+
+. display as result ">>> ATT_glob 应≈0.8×平均强度≈0.40"
+>>> ATT_glob 应≈0.8×平均强度≈0.40
+
+. 
+. *===============================================================
+. * 4. 分档剂量-反应曲线（稳健性对照）
+. *===============================================================
+. xtile q = dose if treated, nq(3)             // 处理组内按强度分三档
+
+. replace q = 0 if !treated                    // 零强度对照
+(3,000 real changes made)
+
+. gen d1 = (q == 1) * post                     // 手动构造"档位×政策后"
+
+. gen d2 = (q == 2) * post
+
+. gen d3 = (q == 3) * post
+
+. reghdfe y d1 d2 d3, absorb(id year) vce(cluster id)
+(MWFE estimator converged in 2 iterations)
+
+HDFE Linear regression                            Number of obs   =      6,000
+Absorbing 2 HDFE groups                           F(   3,    999) =     403.46
+Statistics robust to heteroskedasticity           Prob > F        =     0.0000
+                                                  R-squared       =     0.7456
+                                                  Adj R-squared   =     0.6942
+                                                  Within R-sq.    =     0.2008
+Number of clusters (id)      =      1,000         Root MSE        =     0.2534
+
+                                 (Std. err. adjusted for 1,000 clusters in id)
+------------------------------------------------------------------------------
+             |               Robust
+           y | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+          d1 |   .1896724   .0208992     9.08   0.000     .1486611    .2306837
+          d2 |   .4144902   .0186742    22.20   0.000      .377845    .4511354
+          d3 |   .5957239   .0188934    31.53   0.000     .5586485    .6327992
+       _cons |   2.107436   .0034147   617.17   0.000     2.100736    2.114137
+------------------------------------------------------------------------------
+
+Absorbed degrees of freedom:
+-----------------------------------------------------+
+ Absorbed FE | Categories  - Redundant  = Num. Coefs |
+-------------+---------------------------------------|
+          id |      1000        1000           0    *|
+        year |         6           1           5     |
+-----------------------------------------------------+
+* = FE nested within cluster; treated as redundant for DoF computation
+
+. * 三档系数应递增且大致等距（线性剂量-反应的特征）
+. 
+. * 剂量-反应图：三档效应递增
+. coefplot, keep(d1 d2 d3) vertical yline(0) ///
+>     coeflabels(d1="低强度" d2="中强度" d3="高强度") ///
+>     xtitle("补贴强度分档") ytitle("效应系数") ///
+>     title("剂量-反应关系（分档估计）")
+
+. graph export "强度DID_剂量反应图.png", replace width(2000)
+(file 强度DID_剂量反应图.png not found)
+file 强度DID_剂量反应图.png saved as PNG format
+
+. 
+. *===============================================================
+. * 5. 强度分布图（零强度对照 + 处理组强度分布）
+. *===============================================================
+. twoway (histogram dose if treated, width(0.04) color(navy%55)), ///
+>     xtitle("补贴强度") ytitle("频数") ///
+>     title("处理强度分布（另有500家零强度对照）")
+
+. graph export "强度DID_强度分布图.png", replace width(2000)
+(file 强度DID_强度分布图.png not found)
+file 强度DID_强度分布图.png saved as PNG format
+
+. 
+. *===============================================================
+. log close
+      name:  <unnamed>
+       log:  C:\Users\ASUS\Desktop\强度DID案例\强度DID案例.log
+  log type:  text
+ closed on:  15 Aug 2026, 18:05:58
+-------------------------------------------------------------------------------

@@ -1,0 +1,542 @@
+-------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  C:\Users\ASUS\Desktop\RDD案例\RDD案例.log
+  log type:  text
+ opened on:  15 Aug 2026, 16:36:40
+
+. 
+. *---------------------------------------------------------------
+. * 自动检查并安装所需命令（首次联网安装一次即可）
+. * 注意：rddensity 必须加 all 选项，否则附属文件缺失会报错 r(601)
+. *---------------------------------------------------------------
+. capture which rdrobust
+
+. if _rc ssc install rdrobust, replace
+
+. capture which lpdensity
+
+. if _rc ssc install lpdensity, replace
+
+. capture findfile rddensity_fun.do
+
+. if _rc ssc install rddensity, all replace
+
+. * 注意：首次安装 rddensity 会在本目录留下几个 rddensity_ 开头的
+. * 附属文件（.do/.mo/.dta），属正常现象，请保留勿删
+. 
+. *---------------------------------------------------------------
+. * 1. 模拟截面数据：5000名考生，真实证书效应 = 0.08（对数工资）
+. *    【换用真实数据时，替换这一段即可，后面代码不用动】
+. *---------------------------------------------------------------
+. set seed 20260816
+
+. set obs 5000
+Number of observations (_N) was 0, now 5,000.
+
+. 
+. gen score = rnormal(60, 12)                // 考试分数（连续标准分）
+
+. gen x     = score - 60                     // 驱动变量：距通过线的距离
+
+. gen d     = (x >= 0)                       // 处理状态：过线获得证书
+
+. 
+. gen age   = round(rnormal(32, 6))        // 协变量1：年龄（断点处应连续）
+
+. gen edu   = round(rnormal(14, 2))        // 协变量2：受教育年限
+
+. 
+. * 结果方程：工资随分数平滑上升（含曲率），过线处向上跳 0.08
+. gen lnwage = 9.5 + 0.08*d + 0.010*x + 0.0002*x^2 + 0.02*edu ///
+>            + rnormal(0, 0.15)
+
+. *                ↑真实效应
+. 
+. label var x      "距通过线的分数差"
+
+. label var lnwage "对数工资"
+
+. label var d      "获得技能证书"
+
+. save "RDD案例数据.dta", replace      // 存档，后面随时调用
+file RDD案例数据.dta saved
+
+. 
+. *===============================================================
+. * 2. RD图：断点处的"跳跃"一眼可见（论文第一张图）
+. *===============================================================
+. rdplot lnwage x, c(0) binselect(es) ///
+>     graph_options(title("RD图：通过线处对数工资的跳跃") ///
+>                   xtitle("距通过线的分数差") ytitle("对数工资"))
+
+RD Plot with evenly spaced number of bins using spacings estimators.
+
+         Cutoff c = 0 | Left of c  Right of c        Number of obs  =       500
+> 0
+----------------------+----------------------        Kernel         =    Unifor
+> m
+        Number of obs |      2509        2491
+   Eff. Number of obs |      2509        2491
+  Order poly. fit (p) |         4           4
+     BW poly. fit (h) |    39.130      45.327
+ Number of bins scale |     1.000       1.000
+
+Outcome: lnwage. Running variable: x.
+---------------------------------------------
+                      | Left of c  Right of c
+----------------------+----------------------
+        Bins selected |        12          21
+   Average bin length |     3.261       2.158
+    Median bin length |     3.261       2.158
+----------------------+----------------------
+    IMSE-optimal bins |        12          21
+  Mimicking Var. bins |        86         123
+----------------------+----------------------
+Rel. to IMSE-optimal: | 
+        Implied scale |     1.000       1.000
+    WIMSE var. weight |     0.500       0.500
+    WIMSE bias weight |     0.500       0.500
+---------------------------------------------
+
+
+. graph export "RD图_断点跳跃.png", replace width(2000)
+file RD图_断点跳跃.png saved as PNG format
+
+. 
+. *===============================================================
+. * 3. 基准估计：局部线性 + 三角核 + MSE最优带宽（默认配置）
+. *===============================================================
+. rdrobust lnwage x, c(0)
+
+Sharp RD estimates using local polynomial regression.
+
+      Cutoff c = 0 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =      mser
+> d
+     Number of obs |      2509        2491            Kernel        = Triangula
+> r
+Eff. Number of obs |      1453        1390            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |     9.660       9.660
+       BW bias (b) |    16.160      16.160
+         rho (h/b) |     0.598       0.598
+
+Outcome: lnwage. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect |  .07796       | 5.7377        0.000     .053053     .10810
+> 1
+-------------------------------------------------------------------------------
+> -
+
+. * 重点看三行：Conventional（点估计）、Robust（稳健置信区间）
+. * 期刊投稿应同时报告 Conventional 与 Robust 两套结果
+. 
+. local h = e(h_l)
+
+. display as result ">>> MSE最优带宽 h = " %5.2f `h'
+>>> MSE最优带宽 h =  9.66
+
+. display as result ">>> 真实效应 = 0.08，估计值应落在其附近"
+>>> 真实效应 = 0.08，估计值应落在其附近
+
+. 
+. *===============================================================
+. * 4. 稳健性之一：带宽敏感性（最优带宽的 0.5 倍与 2 倍）
+. *===============================================================
+. rdrobust lnwage x, c(0) h(`=`h'/2')      // 半带宽：偏差小、方差大
+
+Sharp RD estimates using local polynomial regression.
+
+      Cutoff c = 0 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =     Manua
+> l
+     Number of obs |      2509        2491            Kernel        = Triangula
+> r
+Eff. Number of obs |       803         750            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |     4.830       4.830
+       BW bias (b) |     4.830       4.830
+         rho (h/b) |     1.000       1.000
+
+Outcome: lnwage. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect |  .08904       | 4.4472        0.000     .056629     .14587
+> 7
+-------------------------------------------------------------------------------
+> -
+
+. rdrobust lnwage x, c(0) h(`=`h'*2')      // 双倍带宽：偏差大、方差小
+
+Sharp RD estimates using local polynomial regression.
+
+      Cutoff c = 0 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =     Manua
+> l
+     Number of obs |      2509        2491            Kernel        = Triangula
+> r
+Eff. Number of obs |      2252        2235            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |    19.320      19.320
+       BW bias (b) |    19.320      19.320
+         rho (h/b) |     1.000       1.000
+
+Outcome: lnwage. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect |  .07216       | 6.1181        0.000     .053221     .10339
+> 3
+-------------------------------------------------------------------------------
+> -
+
+. 
+. *===============================================================
+. * 5. 稳健性之二：更换多项式阶数与核函数
+. *===============================================================
+. rdrobust lnwage x, c(0) p(2)                  // 二阶多项式
+
+Sharp RD estimates using local polynomial regression.
+
+      Cutoff c = 0 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =      mser
+> d
+     Number of obs |      2509        2491            Kernel        = Triangula
+> r
+Eff. Number of obs |      1442        1385            VCE method    =         N
+> N
+    Order est. (p) |         2           2
+    Order bias (q) |         3           3
+       BW est. (h) |     9.570       9.570
+       BW bias (b) |    13.498      13.498
+         rho (h/b) |     0.709       0.709
+
+Outcome: lnwage. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect |  .08754       | 4.7156        0.000      .05257     .12735
+> 2
+-------------------------------------------------------------------------------
+> -
+
+. rdrobust lnwage x, c(0) kernel(uniform)       // 均匀核
+
+Sharp RD estimates using local polynomial regression.
+
+      Cutoff c = 0 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =      mser
+> d
+     Number of obs |      2509        2491            Kernel        =    Unifor
+> m
+Eff. Number of obs |      1250        1192            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |     8.030       8.030
+       BW bias (b) |    14.594      14.594
+         rho (h/b) |     0.550       0.550
+
+Outcome: lnwage. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect |   .0789       | 5.6022        0.000      .05191     .10777
+> 7
+-------------------------------------------------------------------------------
+> -
+
+. 
+. *===============================================================
+. * 6. 协变量平衡性检验：年龄、学历在断点处应"无跳跃"（不显著）
+. *===============================================================
+. rdrobust age x, c(0)
+
+Sharp RD estimates using local polynomial regression.
+
+      Cutoff c = 0 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =      mser
+> d
+     Number of obs |      2509        2491            Kernel        = Triangula
+> r
+Eff. Number of obs |      1377        1317            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |     9.017       9.017
+       BW bias (b) |    14.941      14.941
+         rho (h/b) |     0.603       0.603
+
+Outcome: age. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect | -.20128       | -0.1916       0.848     -1.2005     .98672
+> 5
+-------------------------------------------------------------------------------
+> -
+
+. rdrobust edu x, c(0)
+
+Sharp RD estimates using local polynomial regression.
+
+      Cutoff c = 0 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =      mser
+> d
+     Number of obs |      2509        2491            Kernel        = Triangula
+> r
+Eff. Number of obs |      1250        1192            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |     8.030       8.030
+       BW bias (b) |    12.960      12.960
+         rho (h/b) |     0.620       0.620
+
+Outcome: edu. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect | -.14276       | -0.8792       0.379    -.580909     .22112
+> 7
+-------------------------------------------------------------------------------
+> -
+
+. * 若协变量在断点处显著跳跃，说明断点两侧个体不可比，识别失效
+. 
+. *===============================================================
+. * 7. 操纵检验：驱动变量密度连续性
+. *    （rddensity 是 McCrary 2008 检验的改进版）
+. *===============================================================
+. rddensity x, c(0)
+Computing data-driven bandwidth selectors.
+
+Point estimates and standard errors have been adjusted for repeated observation
+> s.
+(Use option nomasspoints to suppress this adjustment.)
+
+RD Manipulation test using local polynomial density estimation.
+
+     c =     0.000 | Left of c  Right of c          Number of obs =         500
+> 0
+-------------------+----------------------          Model         = unrestricte
+> d
+     Number of obs |      2509        2491          BW method     =         com
+> b
+Eff. Number of obs |      2109        1953          Kernel        =   triangula
+> r
+    Order est. (p) |         2           2          VCE method    =    jackknif
+> e
+    Order bias (q) |         3           3
+       BW est. (h) |    16.862      14.882
+
+Running variable: x.
+------------------------------------------
+            Method |      T          P>|T|
+-------------------+----------------------
+            Robust |   -1.1497      0.2503
+------------------------------------------
+
+P-values of binomial tests. (H0: prob = .5)
+-----------------------------------------------------
+ Window Length / 2 |       <c         >=c |     P>|T|
+-------------------+----------------------+----------
+             0.132 |       20          22 |    0.8776
+             0.264 |       44          48 |    0.7547
+             0.396 |       74          61 |    0.3017
+             0.528 |       99          79 |    0.1542
+             0.660 |      124          99 |    0.1078
+             0.792 |      147         125 |    0.2028
+             0.925 |      169         147 |    0.2374
+             1.057 |      193         164 |    0.1383
+             1.189 |      210         177 |    0.1037
+             1.321 |      238         199 |    0.0690
+-----------------------------------------------------
+
+. * 原假设：密度在断点处连续；p > 0.1 表示无精确操纵的证据
+. 
+. *===============================================================
+. * 8. 安慰剂检验：假断点处不应出现跳跃
+. *    （假断点要离真断点足够远，避免估计窗口覆盖真断点）
+. *===============================================================
+. rdrobust lnwage x, c(-12)
+
+Sharp RD estimates using local polynomial regression.
+
+    Cutoff c = -12 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =      mser
+> d
+     Number of obs |       812        4188            Kernel        = Triangula
+> r
+Eff. Number of obs |       511         784            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |     6.457       6.457
+       BW bias (b) |    10.145      10.145
+         rho (h/b) |     0.636       0.636
+
+Outcome: lnwage. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect | -.01134       | -0.4467       0.655    -.055361      .0348
+> 1
+-------------------------------------------------------------------------------
+> -
+
+. rdrobust lnwage x, c(12)
+
+Sharp RD estimates using local polynomial regression.
+
+     Cutoff c = 12 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =      mser
+> d
+     Number of obs |      4201         799            Kernel        = Triangula
+> r
+Eff. Number of obs |       932         536            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |     7.104       7.104
+       BW bias (b) |    11.306      11.306
+         rho (h/b) |     0.628       0.628
+
+Outcome: lnwage. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect |  .01398       | 0.5548        0.579    -.028823     .05158
+> 6
+-------------------------------------------------------------------------------
+> -
+
+. * 两处估计均应不显著；若显著，说明跳跃可能来自其他因素
+. 
+. *===============================================================
+. * 9. 进阶（选做）：模糊断点 FRD——过线只提高"领证"概率
+. *===============================================================
+. * 现实中常有"过线但不领证"与"没过线也拿证"的个体，
+. * 此时处理状态不再是 0->1 的硬切换，需要模糊断点：
+. gen p_cert  = 0.15 + 0.65*d               // 持证概率从 0.15 跳到 0.80
+
+. gen cert    = runiform() < p_cert         // 实际持证状态
+
+. gen lnwage2 = 9.5 + 0.08*cert + 0.010*x + 0.0002*x^2 + 0.02*edu ///
+>             + rnormal(0, 0.15)
+
+. *                  ↑真实效应（仅对"因过线而领证"者成立）
+. 
+. rdrobust lnwage2 x, c(0) fuzzy(cert)
+
+Fuzzy RD estimates using local polynomial regression.
+
+      Cutoff c = 0 | Left of c  Right of c            Number of obs =       500
+> 0
+-------------------+----------------------            BW type       =      mser
+> d
+     Number of obs |      2509        2491            Kernel        = Triangula
+> r
+Eff. Number of obs |      1399        1331            VCE method    =         N
+> N
+    Order est. (p) |         1           1
+    Order bias (q) |         2           2
+       BW est. (h) |     9.170       9.170
+       BW bias (b) |    14.625      14.625
+         rho (h/b) |     0.627       0.627
+
+First-stage estimates. Outcome: cert. Running variable: x.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect |  .65719       | 17.7011       0.000     .596263     .71812
+> 4
+-------------------------------------------------------------------------------
+> -
+
+Treatment effect estimates. Outcome: lnwage2. Running variable: x. Treatment St
+> atus: cert.
+-------------------------------------------------------------------------------
+> -
+                   | Point         | Robust Inference
+                   | Estimate      | z-stat        P>|z|    [95% Conf. Interval
+> ]
+-------------------+-----------------------------------------------------------
+> -
+         RD Effect |  .07219       | 3.2815        0.001     .029264     .11607
+> 1
+-------------------------------------------------------------------------------
+> -
+
+. * 解读：一阶段跳跃约 0.65（过线使持证概率上升），
+. *       FRD 估计 ≈ 0.08，即断点处的局部平均处理效应（LATE）
+. 
+. save "RDD案例数据.dta", replace
+file RDD案例数据.dta saved
+
+. 
+. *===============================================================
+. log close
+      name:  <unnamed>
+       log:  C:\Users\ASUS\Desktop\RDD案例\RDD案例.log
+  log type:  text
+ closed on:  15 Aug 2026, 16:36:43
+-------------------------------------------------------------------------------
